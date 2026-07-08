@@ -1411,100 +1411,177 @@ function drawParticles(){
     ctx.restore();
   }
 }
-/* ===== рука результата: «рука у камеры» — 4 пальца вплотную, крупный план ===== */
-function resFingerPath(fx,top,w,taper){
-  const wt=w*taper, r=wt/2;
-  const p=new Path2D();
-  p.moveTo(fx-w/2,H+60);
-  p.lineTo(fx-wt/2,top+r*1.1);
-  p.bezierCurveTo(fx-wt/2,top+r*0.18,fx-wt*0.30,top,fx,top);
-  p.bezierCurveTo(fx+wt*0.30,top,fx+wt/2,top+r*0.18,fx+wt/2,top+r*1.1);
-  p.lineTo(fx+w/2,H+60);
-  p.closePath();
-  return p;
-}
-function drawHand(t){
-  const sway=Math.sin(t/2400)*4, tilt=Math.sin(t/3100)*0.012;
-  const U=Math.min(SW*0.20,104);
-  const midTop=clamp(H*0.30,205,H*0.42);
-  const F=[
-    {k:0.95,dy:0.52},   // указательный
-    {k:1.00,dy:0},      // средний
-    {k:0.96,dy:0.25},   // безымянный
-    {k:0.80,dy:1.07},   // мизинец
-  ];
+/* ===== рука результата: попиксельный 3D-рендер (ламберт+спекуляр+SSS) ===== */
+let handSprite=null,handKey='';
+function handLayout(){
+  const midTop=clamp(H*0.30,205,H*0.40);
+  const U=Math.min(SW*0.205,(H*0.78-midTop)/3.85);
+  const F=[{k:0.95,dy:0.52},{k:1.00,dy:0},{k:0.96,dy:0.25},{k:0.80,dy:1.07}];
   let xs=[],xacc=0;
   F.forEach(f=>{xs.push(xacc+f.k*U/2);xacc+=f.k*U;});
   const total=xacc;
-  const left=W/2+sway-total/2;
+  const left=W/2-total/2;
   const tops=F.map(f=>midTop+f.dy*U);
-  ctx.save();
-  const pivX=W/2+sway,pivY=H*0.7;
-  ctx.translate(pivX,pivY);ctx.rotate(tilt);ctx.translate(-pivX,-pivY);
-  /* тень по общему силуэту */
-  const un=new Path2D();
-  F.forEach((f,i)=>{un.addPath(resFingerPath(left+xs[i],tops[i],f.k*U,0.93));});
-  ctx.save();
-  ctx.shadowColor='rgba(64,10,80,.38)';ctx.shadowBlur=36;ctx.shadowOffsetY=10;
-  ctx.fillStyle='#d1946c';ctx.fill(un);
-  ctx.restore();
-  /* пальцы */
-  const paths=[];
-  F.forEach((f,i)=>{
-    const fx=left+xs[i], w=f.k*U;
-    const p=resFingerPath(fx,tops[i],w,0.93);
-    paths.push(p);
-    ctx.fillStyle=skinGrad(fx-w/2,fx+w/2);
-    ctx.fill(p);
-    ctx.save();ctx.clip(p);
-    /* складочки суставов */
-    ctx.strokeStyle='rgba(190,120,90,.28)';ctx.lineWidth=Math.max(2,U*0.035);ctx.lineCap='round';
-    for(let k=0;k<2;k++){
-      const y=tops[i]+U*1.55+k*U*0.16;
-      ctx.beginPath();ctx.moveTo(fx-w*0.30,y);
-      ctx.quadraticCurveTo(fx,y+U*0.10,fx+w*0.30,y);ctx.stroke();
+  const kY=midTop+3.85*U;
+  return {midTop,U,F,xs,total,left,tops,kY};
+}
+function buildHandSprite(){
+  const Lo=handLayout();
+  const {U,F,xs,total,tops,kY}=Lo;
+  const scale=Math.min(DPR,2);
+  const pad=U*0.25;
+  const sx0=Lo.left-pad, sy0=Lo.midTop-pad;
+  const sw=Math.ceil((total+pad*2)*scale), sh=Math.ceil((H-sy0)*scale);
+  const cnv=document.createElement('canvas');cnv.width=sw;cnv.height=sh;
+  const c2=cnv.getContext('2d');
+  const img=c2.createImageData(sw,sh);
+  const D=img.data;
+  /* свет */
+  let Lx=-0.36,Ly=-0.50,Lz=0.79;
+  const Ll=Math.hypot(Lx,Ly,Lz);Lx/=Ll;Ly/=Ll;Lz/=Ll;
+  /* цвета кожи */
+  const A1=[253,219,182],A2=[242,187,146];       // альбедо верх/низ
+  const SSS=[236,126,116];                        // подповерхностный тёплый
+  const pw=total*1.005, pl=(total-pw)/2+pad;       // ладонь в локальных коорд.
+  const prad=U*0.30, ptop=kY-sy0-U*0.10;
+  const fx=[],fw=[],ft=[];
+  F.forEach((f,i)=>{fx.push(xs[i]+pad);fw.push(f.k*U);ft.push(tops[i]-sy0);});
+  const kYl=kY-sy0;
+  const seams=[0,1,2].map(i=>fx[i]+fw[i]/2);
+  const g=(v,s2)=>Math.exp(-v*v/s2);
+  for(let py=0;py<sh;py++){
+    const y=py/scale;
+    for(let px2=0;px2<sw;px2++){
+      const x=px2/scale;
+      let nx=0,ny=0,nz=0,alpha=0,edge=1,crease=1,tipBlush=0,ao=1,knl=0;
+      /* --- пальцы (приоритет) --- */
+      let hit=-1,hx=0,hw2=0;
+      for(let i=0;i<4;i++){
+        const t=y-ft[i];
+        if(t<0||y>kYl+U*0.55)continue;
+        const r=fw[i]*0.465;
+        let halfw;
+        let nyl=0;
+        if(t<r){                                   // купол кончика
+          const q=1-(r-t)/r;
+          halfw=r*Math.sqrt(Math.max(0,1-((r-t)/r)*((r-t)/r)));
+          nyl=-(r-t)/r*0.85;
+        }else{
+          const Lf=kYl-ft[i];
+          const c1=ft[i]+0.44*Lf, c2y=ft[i]+0.76*Lf;
+          const bulge=1+0.030*g(y-c1,(U*0.28)*(U*0.28))+0.035*g(y-c2y,(U*0.30)*(U*0.30))
+                       -0.020*g(y-(c1+c2y)/2,(U*0.34)*(U*0.34));
+          halfw=r*Math.min(1.075,bulge)*(1+0.06*Math.max(0,(y-c2y)/(kYl-c2y||1)));
+        }
+        const dx=x-fx[i];
+        if(Math.abs(dx)<=halfw+1.5){
+          if(hit<0||Math.abs(dx)/halfw<Math.abs(hx)/hw2){hit=i;hx=dx;hw2=halfw;
+            const q=Math.abs(dx)/halfw;
+            edge=Math.min(1,(halfw+1.2-Math.abs(dx))/2.2);
+            nx=dx/halfw;ny=nyl;nz=Math.sqrt(Math.max(0.02,1-nx*nx));
+            /* складки суставов — мягкие 3D-борозды */
+            if(t>=r){
+              const Lf=kYl-ft[i];
+              const c1=ft[i]+0.44*Lf, c2y=ft[i]+0.76*Lf;
+              const fadeE=1-Math.min(1,Math.max(0,(q-0.45)/0.4));
+              const d1=g(y-c1,(U*0.06)*(U*0.06))+0.35*g(y-c1-U*0.15,(U*0.05)*(U*0.05));
+              const d2=g(y-c2y,(U*0.065)*(U*0.065))+0.35*g(y-c2y-U*0.16,(U*0.05)*(U*0.05));
+              crease=1-0.105*fadeE*Math.min(1.3,d1+d2);
+            }
+            tipBlush=Math.max(0,1-t/(fw[i]*1.4))*0.5;
+          }
+        }
+      }
+      if(hit<0){
+        /* --- ладонь --- */
+        if(y>=ptop){
+          let inside=x>=pl&&x<=pl+pw;
+          let ed=Math.min(x-pl,pl+pw-x);
+          if(y<ptop+prad){
+            const cyv=ptop+prad;
+            if(x<pl+prad){const ddx=x-(pl+prad),ddy=y-cyv;ed=prad-Math.hypot(ddx,ddy);inside=ed>-1.5;}
+            else if(x>pl+pw-prad){const ddx=x-(pl+pw-prad),ddy=y-cyv;ed=prad-Math.hypot(ddx,ddy);inside=ed>-1.5;}
+            else ed=Math.min(ed,y-ptop);
+          }
+          if(inside){
+            edge=Math.min(1,(ed+1.2)/2.2);
+            const dxp=(x-(pl+pw/2))/(pw/2);
+            nx=dxp*0.85;nz=Math.sqrt(Math.max(0.05,1-nx*nx));ny=0;
+            if(y<ptop+U*0.5)ny=-(1-(y-ptop)/(U*0.5))*0.5;
+            /* костяшки-бугорки */
+            for(let i=0;i<4;i++){
+              const bd2=((x-fx[i])*(x-fx[i])+(y-(kYl+U*0.14))*(y-(kYl+U*0.14)))/((U*0.30)*(U*0.30));
+              knl+=0.20*Math.exp(-bd2);
+            }
+            /* ложбинки между костяшками */
+            for(const sxx of seams){
+              const vd2=((x-sxx)*(x-sxx)+(y-(kYl+U*0.10))*(y-(kYl+U*0.10)))/((U*0.26)*(U*0.26));
+              ao-=0.18*Math.exp(-vd2);
+            }
+            hit=9;
+          }
+        }
+      }else{
+        /* AO швов между пальцами */
+        for(const sxx of seams){
+          const sd=(x-sxx)/(U*0.075);
+          if(y>Math.max(ft[hit],0)+U*0.6)ao-=0.16*Math.exp(-sd*sd);
+        }
+      }
+      const o=(py*sw+px2)*4;
+      if(hit<0||edge<=0){D[o+3]=0;continue;}
+      /* нормализация и свет */
+      const nl=Math.hypot(nx,ny,nz)||1;nx/=nl;ny/=nl;nz/=nl;
+      let dif=nx*Lx+ny*Ly+nz*Lz;
+      dif=Math.max(0,(dif+0.42)/1.42);
+      /* спекуляр (отражение к камере V=(0,0,1)) */
+      const rz=2*dif*nz-Lz;
+      let spec=Math.pow(Math.max(0,rz),30)*0.30*crease;
+      /* альбедо по высоте + румянец кончика */
+      const ty2=Math.min(1,Math.max(0,y/sh));
+      let ar=A1[0]+(A2[0]-A1[0])*ty2, ag=A1[1]+(A2[1]-A1[1])*ty2, ab=A1[2]+(A2[2]-A1[2])*ty2;
+      ar=ar+(255-ar)*tipBlush*0.25+(SSS[0]-ar)*tipBlush*0.30;
+      ag=ag+(SSS[1]-ag)*tipBlush*0.28;
+      ab=ab+(SSS[2]-ab)*tipBlush*0.28;
+      /* SSS: в тени кожа теплеет, а не чернеет */
+      const sssMix=0.42*(1-dif);
+      ar=ar*(1-sssMix)+SSS[0]*sssMix;
+      ag=ag*(1-sssMix)+SSS[1]*sssMix;
+      ab=ab*(1-sssMix)+SSS[2]*sssMix;
+      const li=(0.46+0.60*dif)*crease*ao+knl*(0.6+0.4*dif);
+      let R=ar*li+spec*255, G=ag*li+spec*255, B=ab*li+spec*255;
+      D[o]=R>255?255:R;D[o+1]=G>255?255:G;D[o+2]=B>255?255:B;
+      D[o+3]=Math.max(0,Math.min(1,edge))*255;
     }
-    ctx.strokeStyle='rgba(190,120,90,.20)';
-    for(let k=0;k<2;k++){
-      const y=tops[i]+U*3.05+k*U*0.15;
-      ctx.beginPath();ctx.moveTo(fx-w*0.28,y);
-      ctx.quadraticCurveTo(fx,y+U*0.09,fx+w*0.28,y);ctx.stroke();
-    }
-    /* верхний свет и румянец */
-    const tl2=ctx.createLinearGradient(0,tops[i],0,tops[i]+U*1.2);
-    tl2.addColorStop(0,'rgba(255,255,255,.18)');tl2.addColorStop(1,'rgba(255,255,255,0)');
-    ctx.fillStyle=tl2;ctx.fillRect(fx-w/2,tops[i],w,U*1.3);
-    const rg=ctx.createRadialGradient(fx,tops[i]+U*0.85,2,fx,tops[i]+U*0.85,U*0.55);
-    rg.addColorStop(0,'rgba(255,120,150,.13)');rg.addColorStop(1,'rgba(255,120,150,0)');
-    ctx.fillStyle=rg;ctx.beginPath();ctx.arc(fx,tops[i]+U*0.85,U*0.55,0,7);ctx.fill();
-    ctx.restore();
-  });
-  /* швы между пальцами */
-  for(let i=0;i<3;i++){
-    const bx=left+xs[i]+F[i].k*U/2;
-    const topSeam=Math.max(tops[i],tops[i+1])+U*0.55;
-    const sh=ctx.createLinearGradient(bx-U*0.16,0,bx,0);
-    sh.addColorStop(0,'rgba(160,90,60,0)');sh.addColorStop(1,'rgba(160,90,60,.30)');
-    ctx.fillStyle=sh;ctx.fillRect(bx-U*0.16,topSeam,U*0.16,H);
-    const li=ctx.createLinearGradient(bx,0,bx+U*0.10,0);
-    li.addColorStop(0,'rgba(255,240,225,.40)');li.addColorStop(1,'rgba(255,240,225,0)');
-    ctx.fillStyle=li;ctx.fillRect(bx,topSeam,U*0.10,H);
   }
-  /* мультяшный контур */
-  paths.forEach(p=>{
-    ctx.strokeStyle='rgba(146,78,52,.30)';ctx.lineWidth=Math.max(2,U*0.045);
-    ctx.stroke(p);
-  });
+  c2.putImageData(img,0,0);
+  handSprite={cnv,sx0,sy0,w:sw/scale,h:sh/scale,layout:Lo};
+}
+function drawHand(t){
+  const key=W+'x'+H+'x'+DPR;
+  if(!handSprite||handKey!==key){handKey=key;buildHandSprite();}
+  const {U,F,xs,left,tops}=handSprite.layout;
+  const sway=Math.sin(t/2400)*4, tilt=Math.sin(t/3100)*0.012;
+  ctx.save();
+  const pivX=W/2+sway,pivY=handSprite.layout.kY;
+  ctx.translate(sway,0);
+  ctx.translate(pivX-sway,pivY);ctx.rotate(tilt);ctx.translate(-(pivX-sway),-pivY);
+  /* мягкая тень позади силуэта */
+  ctx.save();
+  ctx.shadowColor='rgba(64,10,80,.42)';ctx.shadowBlur=38;ctx.shadowOffsetY=14;
+  ctx.drawImage(handSprite.cnv,handSprite.sx0,handSprite.sy0,handSprite.w,handSprite.h);
+  ctx.restore();
+  ctx.drawImage(handSprite.cnv,handSprite.sx0,handSprite.sy0,handSprite.w,handSprite.h);
   /* ногти с маникюром игрока */
   F.forEach((f,i)=>{
-    const fx=left+xs[i], w=f.k*U;
+    const fxs=left+xs[i], w=f.k*U;
     const nw=w*0.62;
     let decors=null;
     if(nail.decors.length){
       if(i===1)decors=nail.decors.slice(0,2);
       else if(i===2&&nail.decors.length>2)decors=[nail.decors[2]];
     }
-    renderNailInto(ctx,fx-nw/2,tops[i]+U*0.115,nw,{
+    renderNailInto(ctx,fxs-nw/2,tops[i]+U*0.115,nw,{
       shapeIdx:nail.shapeIdx,polishIdx:nail.polishIdx,glitterIdx:nail.glitterIdx,
       dots:handDesign?handDesign[i]:null,decors});
   });
