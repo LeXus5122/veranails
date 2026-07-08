@@ -1,11 +1,12 @@
 /* VeraNails service worker — HTML network-first (обновления доходят), остальное cache-first (офлайн) */
-const CACHE = 'veranails-v2-20260709';
+const CACHE = 'veranails-v3-20260709';
 const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
   './icons/veranails-180.png',
-  './icons/veranails-512.png'
+  './icons/veranails-512.png',
+  './hand.png'
 ];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));

@@ -1412,6 +1412,16 @@ function drawParticles(){
   }
 }
 /* ===== рука результата: попиксельный 3D-рендер (ламберт+спекуляр+SSS) ===== */
+/* нейрорендер руки (nano-banana через OpenRouter) + карта ногтей на кончиках */
+const HAND_IMG=new Image();HAND_IMG.src='hand.png';
+const HAND_ASPECT=615/1000, HAND_CX=0.45;   //視цент ладони в долях ширины картинки
+const NAIL_MAP=[
+  {x:0.337,y:0.094,w:0.071,ang:-0.05},  // указательный
+  {x:0.560,y:0.036,w:0.078,ang: 0.02},  // средний
+  {x:0.758,y:0.106,w:0.073,ang: 0.08},  // безымянный
+  {x:0.946,y:0.245,w:0.062,ang: 0.17},  // мизинец
+  {x:0.077,y:0.430,w:0.079,ang:-0.26},  // большой
+];
 let handSprite=null,handKey='';
 function handLayout(){
   const midTop=clamp(H*0.30,205,H*0.40);
@@ -1557,7 +1567,37 @@ function buildHandSprite(){
   c2.putImageData(img,0,0);
   handSprite={cnv,sx0,sy0,w:sw/scale,h:sh/scale,layout:Lo};
 }
+function drawHandImg(t){
+  const sway=Math.sin(t/2400)*4, tilt=Math.sin(t/3100)*0.012;
+  const y0=clamp(H*0.27,190,H*0.36);
+  const dispH=H-y0+70;
+  const dispW=dispH*HAND_ASPECT;
+  const ix=W/2-HAND_CX*dispW+sway, iy=y0;
+  ctx.save();
+  const pivX=W/2+sway,pivY=H*0.75;
+  ctx.translate(pivX,pivY);ctx.rotate(tilt);ctx.translate(-pivX,-pivY);
+  ctx.save();
+  ctx.shadowColor='rgba(64,10,80,.45)';ctx.shadowBlur=42;ctx.shadowOffsetY=16;
+  ctx.drawImage(HAND_IMG,ix,iy,dispW,dispH);
+  ctx.restore();
+  /* ногти игрока поверх натуральных */
+  NAIL_MAP.forEach((n,i)=>{
+    const cx=ix+n.x*dispW, cy=iy+n.y*dispH, nw=n.w*dispW*1.38;
+    let decors=null;
+    if(nail.decors.length){
+      if(i===1)decors=nail.decors.slice(0,2);
+      else if(i===0&&nail.decors.length>2)decors=[nail.decors[2]];
+    }
+    ctx.save();ctx.translate(cx,cy);ctx.rotate(n.ang);
+    renderNailInto(ctx,-nw/2,-nw*0.66,nw,{
+      shapeIdx:nail.shapeIdx,polishIdx:nail.polishIdx,glitterIdx:nail.glitterIdx,
+      dots:handDesign?handDesign[i]:null,decors});
+    ctx.restore();
+  });
+  ctx.restore();
+}
 function drawHand(t){
+  if(HAND_IMG.complete&&HAND_IMG.naturalWidth){drawHandImg(t);return;}
   const key=W+'x'+H+'x'+DPR;
   if(!handSprite||handKey!==key){handKey=key;buildHandSprite();}
   const {U,F,xs,left,tops}=handSprite.layout;
