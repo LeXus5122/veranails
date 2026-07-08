@@ -1567,33 +1567,44 @@ function buildHandSprite(){
   c2.putImageData(img,0,0);
   handSprite={cnv,sx0,sy0,w:sw/scale,h:sh/scale,layout:Lo};
 }
-function drawHandImg(t){
-  const sway=Math.sin(t/2400)*4, tilt=Math.sin(t/3100)*0.012;
+let maniSprite=null,maniKey='';
+function buildManiSprite(){
+  /* запекаем руку+ногти в один спрайт — рассинхрон исключён */
   const y0=clamp(H*0.27,190,H*0.36);
   const dispH=H-y0+70;
   const dispW=dispH*HAND_ASPECT;
-  const ix=W/2-HAND_CX*dispW+sway, iy=y0;
-  ctx.save();
-  const pivX=W/2+sway,pivY=H*0.75;
-  ctx.translate(pivX,pivY);ctx.rotate(tilt);ctx.translate(-pivX,-pivY);
-  ctx.save();
-  ctx.shadowColor='rgba(64,10,80,.45)';ctx.shadowBlur=42;ctx.shadowOffsetY=16;
-  ctx.drawImage(HAND_IMG,ix,iy,dispW,dispH);
-  ctx.restore();
-  /* ногти игрока поверх натуральных */
+  const sc=Math.min(DPR,2);
+  const cnv=document.createElement('canvas');
+  cnv.width=Math.ceil(dispW*sc);cnv.height=Math.ceil(dispH*sc);
+  const c=cnv.getContext('2d');
+  c.scale(sc,sc);
+  c.drawImage(HAND_IMG,0,0,dispW,dispH);
   NAIL_MAP.forEach((n,i)=>{
-    const cx=ix+n.x*dispW, cy=iy+n.y*dispH, nw=n.w*dispW*1.38;
+    const cx=n.x*dispW, cy=n.y*dispH, nw=n.w*dispW*1.38;
     let decors=null;
     if(nail.decors.length){
       if(i===1)decors=nail.decors.slice(0,2);
       else if(i===0&&nail.decors.length>2)decors=[nail.decors[2]];
     }
-    ctx.save();ctx.translate(cx,cy);ctx.rotate(n.ang);
-    renderNailInto(ctx,-nw/2,-nw*0.66,nw,{
+    c.save();c.translate(cx,cy);c.rotate(n.ang);
+    renderNailInto(c,-nw/2,-nw*0.66,nw,{
       shapeIdx:nail.shapeIdx,polishIdx:nail.polishIdx,glitterIdx:nail.glitterIdx,
       dots:handDesign?handDesign[i]:null,decors});
-    ctx.restore();
+    c.restore();
   });
+  maniSprite={cnv,dispW,dispH,y0};
+}
+function drawHandImg(t){
+  const key=[W,H,DPR,nail.shapeIdx,nail.polishIdx,nail.glitterIdx,nail.decors.length,save.served].join('|');
+  if(!maniSprite||maniKey!==key){maniKey=key;buildManiSprite();}
+  const sway=Math.sin(t/2400)*4, tilt=Math.sin(t/3100)*0.012;
+  const {dispW,dispH,y0}=maniSprite;
+  const ix=W/2-HAND_CX*dispW+sway, iy=y0;
+  ctx.save();
+  const pivX=W/2+sway,pivY=H*0.75;
+  ctx.translate(pivX,pivY);ctx.rotate(tilt);ctx.translate(-pivX,-pivY);
+  ctx.shadowColor='rgba(64,10,80,.45)';ctx.shadowBlur=42;ctx.shadowOffsetY=16;
+  ctx.drawImage(maniSprite.cnv,ix,iy,dispW,dispH);
   ctx.restore();
 }
 function drawHand(t){
